@@ -1,0 +1,104 @@
+device:
+  # ADB serial. Leave null to use the only attached device.
+  serial: null
+  package: com.grofers.customerapp
+  # Seconds to wait for the home feed to finish loading after launch.
+  launch_settle: 6.0
+
+capture:
+  output_dir: data
+  save_full_screenshots: true
+  # Larger hash = stricter matching. 16 -> 256-bit hash.
+  phash_size: 16
+  # Max Hamming distance still considered the same creative, out of 256 bits.
+  # Measured on real captures: two renders of one creative differ by 14 bits,
+  # while the closest genuinely different pair differs by 74. 32 sits in that gap
+  # with wide margin either side. Re-check with `dedupe-check` after app updates.
+  dedupe_distance: 32
+
+detection:
+  # 0.40 admits the half-width "Events this week" promo tiles (586/1280) while
+  # still excluding product cards (379/1280).
+  min_width_ratio: 0.40
+  # height / width bounds. The hero banner is 0.70, the promo tiles 0.71.
+  min_aspect: 0.22
+  max_aspect: 1.00
+  min_height_px: 120
+  # Feed content scrolls *underneath* the sticky overlays, so anything in these
+  # bands is partially hidden. Top 0.23 clears sticky_header (search bar plus
+  # category rail, 636px of 2856); bottom 0.10 clears bottom_nav_bar (258px).
+  exclude_top_ratio: 0.23
+  exclude_bottom_ratio: 0.10
+  # Capture a banner only once it is wholly in view, so crops are never sliced by
+  # an overlay. Anything skipped here is picked up on a later scroll step.
+  require_fully_visible: true
+  # Exact id segments seen on the home feed. Matched *in addition to* the shape
+  # heuristic, so an app update that renames them degrades instead of breaking.
+  #   image_view -> hero banner inside view_pager_2
+  #   image      -> promo tiles inside horizontal_recycler_view
+  resource_id_allow:
+    - image_view
+    - image
+  # An empty ViewGroup laid over the category grid. The layout-class rule already
+  # rejects it, but a bad crop here silently pollutes the library, so be explicit.
+  resource_id_deny:
+    - bottom_clip_lottie_image_view
+  content_desc_allow:
+    - Promotional banner
+  # sticky_header is the search bar and category rail; sticky_footer holds an
+  # empty strip_container that floats over the feed and yields sliced crops.
+  container_deny:
+    - sticky_header
+    - sticky_footer
+  # Set true to trust the allowlists alone and drop the shape fallback.
+  strict_ids: false
+
+feed:
+  # Each step now covers less ground (see max_banner_height_ratio), so more of
+  # them are needed to reach the same depth in the feed.
+  scroll_steps: 20
+  # Upper bound on one lap. Exhaustion normally ends earlier, on returning to the
+  # slide it started from.
+  carousel_max_slides: 18
+  # Consecutive slides already recorded this run before giving up. Guards against
+  # a carousel that never cleanly returns to its first slide, and makes re-walking
+  # an already-covered carousel cheap.
+  carousel_stall_limit: 3
+  # Tallest banner as a fraction of screen height (hero is 716/2856 = 0.25).
+  # Scroll distance is capped at (visible band - this) so a banner can never
+  # pass between two captures unseen.
+  max_banner_height_ratio: 0.30
+
+# Timing jitter. Which selectors we read is invisible to the server; how
+# regularly we act is not. Set enabled: false to make runs deterministic.
+human:
+  enabled: true
+  # Capped by feed.max_banner_height_ratio at runtime; this is the jitter range.
+  scroll_distance: [0.28, 0.42]
+  settle: [0.9, 2.4]
+  # Kept short so the loop outruns the carousel's own auto-rotation; still long
+  # enough for the pager's snap animation to finish before the next screenshot.
+  carousel_settle: [0.55, 1.10]
+  swipe_duration: [0.20, 0.45]
+  long_pause_chance: 0.15
+  long_pause: [3.0, 9.0]
+  location_gap: [20.0, 60.0]
+  # Widen this when running from a scheduler so the job is not punctual.
+  start_jitter: [0.0, 0.0]
+  tap_jitter_px: 12
+  shuffle_locations: true
+
+# geo:    set emulator GPS via `adb emu geo fix`, then tap "use current location"
+# ui:     type search_query into the in-app picker (works on physical phones)
+# manual: never change location
+location_mode: geo
+
+locations:
+  - name: gurgaon-dlf-phase-3
+    lat: 28.4949
+    lon: 77.0895
+    search_query: DLF Phase 3, Gurugram
+  - name: bengaluru-indiranagar
+    lat: 12.9784
+    lon: 77.6408
+    search_query: Indiranagar, Bengaluru
