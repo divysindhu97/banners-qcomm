@@ -9,7 +9,7 @@ import click
 from PIL import Image, ImageDraw
 
 from . import config as config_module
-from .capture import Collector
+from .capture import Collector, purge_non_banners
 from .config import Location
 from .detect import find_banners, find_carousels
 from .device import Device, DeviceError
@@ -106,10 +106,16 @@ def discover(config_path: str, launch: bool) -> None:
 @cli.command()
 @CONFIG_OPTION
 @click.option("--skip-location", is_flag=True, help="Capture the device's current location only.")
-@click.option("--location", "only", default=None, help="Run a single named location from the config.")
+@click.option(
+    "--location",
+    "only",
+    multiple=True,
+    help="Run one named location from the config. Repeat the flag to pick several.",
+)
 @click.option("--location-mode", "mode_override", type=click.Choice(["geo", "ui", "manual"]), default=None)
 @click.option("--seed", type=int, default=None, help="Fix the jitter RNG, for reproducible test runs.")
-def run(config_path: str, skip_location: bool, only: str | None, mode_override: str | None, seed: int | None) -> None:
+@click.option("--no-launch", is_flag=True, help="Do not restart the app; keep the screen that is already open.")
+def run(config_path: str, skip_location: bool, only: tuple[str, ...], mode_override: str | None, seed: int | None, no_launch: bool) -> None:
     """Sweep the home feed and archive every banner creative found."""
     cfg = config_module.load(config_path)
     human = Human(cfg.human, seed=seed)
@@ -120,26 +126,36 @@ def run(config_path: str, skip_location: bool, only: str | None, mode_override: 
     mode = mode_override or cfg.location_mode
     locations = cfg.locations
     if only:
-        locations = [loc for loc in locations if loc.name == only]
-        if not locations:
-            click.secho(f"No location named {only!r} in {config_path}", fg="red")
+        wanted = set(only)
+        locations = [loc for loc in cfg.locations if loc.name in wanted]
+        missing = wanted - {loc.name for loc in locations}
+        if missing:
+            known = ", ".join(loc.name for loc in cfg.locations) or "(none)"
+            click.secho(
+                f"Unknown location(s) {', '.join(sorted(missing))}. Known names: {known}",
+                fg="red",
+            )
             sys.exit(1)
     if skip_location or not locations:
         locations = [Location(name="current")]
         mode = "manual"
 
     human.sleep(cfg.human.start_jitter)
-    device.launch_app()
+    if no_launch:
+        device.ensure_foreground()
+    else:
+        device.launch_app()
 
     for index, location in enumerate(human.order(locations)):
         if index:
             human.sleep(cfg.human.location_gap)
         collector.reset_run()
-        click.echo(f"\n=== {location.name} ===")
+        collector.place = location
+        click.echo(f"\n=== {location.label} ===")
         try:
             set_location(device, location, mode)
             summary = sweep_home(device, collector, cfg, location.name)
-        except DeviceError as exc:
+        except Exception as exc:
             click.secho(f"  skipped: {exc}", fg="yellow")
             continue
         click.echo(f"  {summary.line()}")
@@ -153,6 +169,25 @@ def run(config_path: str, skip_location: bool, only: str | None, mode_override: 
     totals = store.stats()
     click.echo(f"library now holds {totals['creatives']} creatives across {totals['sightings']} sightings")
     click.echo(f"images: {cfg.output_path / 'creatives'}")
+
+    from .analyse import analyse_pending
+    from .dashboard import render
+
+    result = analyse_pending(store)
+    if result["pending"] == 0:
+        click.echo("analyse: nothing new")
+    else:
+        click.echo(f"analyse: {result['analysed']} creatives, brand on {result['resolved']}")
+        if result["learned"]:
+            click.echo(f"learned {len(result['learned'])} brands: {', '.join(result['learned'])}")
+
+    dropped = purge_non_banners(store, cfg.detection)
+    if dropped:
+        click.echo(f"dropped {dropped} non-banner crops")
+
+    destination = cfg.output_path / "dashboard.html"
+    render(store.library(), destination, store.place_summaries())
+    click.echo(f"dashboard: {destination}")
     store.close()
 
 
@@ -275,6 +310,49 @@ def sheet(config_path: str, columns: int, cell_width: int) -> None:
     out = cfg.output_path / "contact_sheet.png"
     sheet_image.save(out)
     click.echo(f"{len(thumbs)} creatives -> {out}")
+
+
+@cli.command()
+@CONFIG_OPTION
+@click.option("--taxonomy", "taxonomy_path", default="taxonomy.yaml", show_default=True)
+@click.option("--force", is_flag=True, help="Re-analyse creatives that already have attributes.")
+def analyse(config_path: str, taxonomy_path: str, force: bool) -> None:
+    """Read copy and attributes out of every stored creative. Runs fully offline."""
+    from .analyse import analyse_pending
+
+    cfg = config_module.load(config_path)
+    store = Store(cfg.output_path / "banners.db")
+    result = analyse_pending(
+        store,
+        taxonomy_path,
+        force=force,
+        progress=lambda rows: click.progressbar(rows, label=f"Analysing {len(rows)} creatives"),
+    )
+    if result["pending"] == 0:
+        click.echo("Nothing to analyse; pass --force to redo them.")
+        store.close()
+        return
+
+    click.echo(f"analysed {result['analysed']}  brand resolved on {result['resolved']}")
+    if result["learned"]:
+        click.echo(f"learned {len(result['learned'])} new brands: {', '.join(result['learned'])}")
+    store.close()
+
+
+@cli.command()
+@CONFIG_OPTION
+@click.option("--output", "output_name", default="dashboard.html", show_default=True)
+def dashboard(config_path: str, output_name: str) -> None:
+    """Write a self-contained, filterable HTML view of the creative library."""
+    from .dashboard import render
+
+    cfg = config_module.load(config_path)
+    store = Store(cfg.output_path / "banners.db")
+    rows = store.library()
+    destination = cfg.output_path / output_name
+    render(rows, destination, store.place_summaries())
+    store.close()
+    click.echo(f"{len(rows)} creatives -> {destination}")
 
 
 if __name__ == "__main__":

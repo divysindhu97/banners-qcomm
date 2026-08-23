@@ -5,15 +5,15 @@ from __future__ import annotations
 import random
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from blinkit_banners.capture import Collector
-from blinkit_banners.config import CaptureConfig, Config, DetectionConfig
+from blinkit_banners.capture import Collector, is_banner_shape, is_feed_chrome, purge_non_banners
+from blinkit_banners.config import CaptureConfig, Config, DetectionConfig, Location
 from blinkit_banners.detect import find_banners, find_carousels
 from blinkit_banners.device import Screen
 from blinkit_banners.flows import find_dismissible, safe_scroll_fraction
 from blinkit_banners.hierarchy import parse
-from blinkit_banners.store import Store
+from blinkit_banners.store import ATTRIBUTE_FIELDS, Store
 
 SCREEN_W, SCREEN_H = 1080, 2400
 
@@ -130,7 +130,7 @@ OVERLAY = """<?xml version='1.0' encoding='UTF-8'?>
     <node class="android.view.ViewGroup" resource-id="a:id/bottom_clip_lottie_image_view"
           bounds="[24,400][1056,830]"/>
     <node class="android.widget.ImageView" resource-id="a:id/real_banner"
-          bounds="[24,1000][1056,1430]"/>
+          bounds="[24,1000][1056,1550]"/>
   </node>
 </hierarchy>
 """
@@ -230,12 +230,73 @@ def test_ingest_stores_creatives_then_dedupes(screen, cfg, tmp_path):
     store.close()
 
 
+def test_ingest_records_city_and_pincode(screen, cfg, tmp_path):
+    store = Store(tmp_path / "banners.db")
+    collector = Collector(cfg, store)
+    collector.place = Location(name="delhi-connaught-place", city="Delhi", pincode="110001")
+    banners = find_banners(screen.root, cfg.detection)
+    collector.ingest(screen, banners, "delhi-connaught-place", "home")
+    row = store.conn.execute("SELECT location, city, pincode FROM sightings").fetchone()
+    assert tuple(row) == ("delhi-connaught-place", "Delhi", "110001")
+    store.close()
+
+
 def test_unloaded_placeholder_is_skipped(cfg, tmp_path):
     store = Store(tmp_path / "banners.db")
     collector = Collector(cfg, store)
     flat = Image.new("RGB", (1000, 560), (235, 235, 235))
     assert collector.ingest_image(flat, "gurgaon", "home", 0) is None
     assert store.stats()["creatives"] == 0
+    store.close()
+
+
+def test_splash_and_tagline_frames_are_skipped(cfg, tmp_path):
+    """Carousel slides captured while the feed is still loading: house branding
+    or a lone tagline on a flat field, not a promotional creative."""
+    store = Store(tmp_path / "banners.db")
+    collector = Collector(cfg, store)
+
+    splash = Image.new("RGB", (1024, 716), (245, 196, 51))
+    ImageDraw.Draw(splash).text((360, 40), "AN ETERNAL COMPANY", fill=(0, 0, 0))
+    tagline = Image.new("RGB", (1024, 716), (255, 255, 255))
+    ImageDraw.Draw(tagline).text((460, 24), "doorstep", fill=(180, 180, 180))
+
+    assert collector.ingest_image(splash, "mumbai-bandra-west", "home-carousel0", 0) is None
+    assert collector.ingest_image(tagline, "mumbai-bandra-west", "home-carousel0", 0) is None
+    assert store.stats()["creatives"] == 0
+    store.close()
+
+
+def test_headers_and_product_rails_are_not_banners():
+    assert not is_banner_shape(1280, 284)   # occasion header
+    assert not is_banner_shape(1208, 372)   # product rail
+    assert not is_banner_shape(640, 372)    # half of that rail
+    assert is_banner_shape(1024, 716)       # hero
+    assert is_banner_shape(586, 415)        # promo tile
+    assert is_banner_shape(1208, 610)       # store promo
+
+
+def test_feed_chrome_copy_is_rejected():
+    assert is_feed_chrome("quentlybought", "gold +14 more +7 more Vegetables")
+    assert is_feed_chrome("RAKHI", "EXPLORE ALL RAKHI Superhero")
+    assert not is_feed_chrome("Keep the party going with Lay's", "Shop now Ad")
+
+
+def test_purge_removes_headers_and_keeps_heroes(cfg, tmp_path):
+    store = Store(tmp_path / "banners.db")
+    collector = Collector(cfg, store)
+    hero = _noise(1024, 716, seed=3)
+    header = _noise(1280, 250, seed=4)
+    assert collector.ingest_image(hero, "gurgaon", "home-carousel0", 0) is not None
+    # Shape filter blocks the header on ingest; plant one as if it slipped in earlier.
+    path = tmp_path / "header.png"
+    header.save(path)
+    store.add_creative("ab" * 32, str(path), 1280, 250)
+    values = {field: None for field in ATTRIBUTE_FIELDS}
+    values.update(headline="Festive Picks", ocr_text="Festive Picks", has_ad_badge=0)
+    store.save_attributes("ab" * 32, values)
+    assert purge_non_banners(store, cfg.detection) == 1
+    assert store.stats()["creatives"] == 1
     store.close()
 
 

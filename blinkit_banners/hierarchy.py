@@ -58,6 +58,7 @@ class Node:
     resource_id: str
     content_desc: str
     text: str
+    hint: str
     bounds: Rect
     clickable: bool
     scrollable: bool
@@ -110,6 +111,7 @@ def parse(xml: str) -> Node:
             resource_id=element.get("resource-id", ""),
             content_desc=element.get("content-desc", ""),
             text=element.get("text", ""),
+            hint=element.get("hint", ""),
             bounds=_parse_bounds(element.get("bounds", "")),
             clickable=element.get("clickable") == "true",
             scrollable=element.get("scrollable") == "true",

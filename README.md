@@ -68,15 +68,21 @@ $py = ".\.venv\Scripts\python.exe"
 
 $py -m blinkit_banners.cli doctor         # device reachable? app installed? emulator?
 $py -m blinkit_banners.cli discover       # dump the current screen and show what we detect
-$py -m blinkit_banners.cli run            # sweep the feed and archive creatives
+$py -m blinkit_banners.cli run            # sweep four cities, OCR new banners, refresh dashboard
 $py -m blinkit_banners.cli report         # library contents with sizes and aspects
 $py -m blinkit_banners.cli sheet          # render the library as one contact sheet
 $py -m blinkit_banners.cli dedupe-check   # closest pairs, for tuning dedupe_distance
+$py -m blinkit_banners.cli analyse        # read copy and attributes out of every creative
+$py -m blinkit_banners.cli dashboard      # write data/dashboard.html
 ```
 
 Start with `run --skip-location` to capture wherever the device already is. Add `--seed N`
 to make a run's jitter reproducible while testing. Drop `--skip-location` once you want it
-cycling through the configured locations.
+cycling through Delhi, Mumbai, Chennai and Hyderabad. Each city has one busy pincode in
+`config.yaml` (Connaught Place 110001, Bandra West 400050, T. Nagar 600017, Banjara Hills
+500034). `run` hashes every crop against the library: a match records another sighting
+(city, pincode, time) against the existing creative; only a new image is saved. After the
+sweep it OCRs any new files and rewrites `data/dashboard.html`.
 
 `discover` writes `data/discovery/<timestamp>/` with the raw hierarchy, a screenshot, and
 `annotated.png` showing red boxes over detected banners and blue over carousels. Always
@@ -174,6 +180,7 @@ data/
   screens/                 full screenshots, for auditing crops
   banners.db               SQLite
   contact_sheet.png        sheet output
+  dashboard.html           browsable, filterable creative library
   discovery/               discover output
 ```
 
@@ -182,14 +189,87 @@ timestamps. `sightings` records every observation — creative, location, surfac
 position, timestamp. That split is what lets you ask when a banner started running in a
 given city.
 
+## Reading the creatives
+
+Copy is not stored in the source. Every new creative is OCRed when `run` finishes (or when
+you call `analyse` yourself). Headlines, brands and occasions live in SQLite and are rebuilt
+from the pixels, so a later scrape of a new banner goes through the same path automatically.
+Brands the analyser has not seen before are learned from the wordmark or copy and reused on
+the next run; `taxonomy.yaml` is only a seed for aliases and categories.
+
+`analyse` can still be run by hand. It is fully offline: RapidOCR on CPU, a dictionary, and
+some geometry. No API key, no GPU, no network.
+
+The pipeline is four steps.
+
+**OCR** returns each line of text with its box, cap height, confidence, and skew angle.
+
+**Layout** turns those lines into a headline, subheadline, CTA and Ad badge. Blinkit lays its
+creatives out consistently — copy left-aligned in a narrow column, product photography to the
+right — and the classifier leans on that. Two rules earn their keep. The copy column is the
+one holding the *tallest* line, not the most text, because a stack of tiny labels on a shampoo
+bottle would otherwise outvote a real headline. And lines rotated more than a few degrees are
+discarded, because a tilted gift card gets an inflated bounding box that can look bigger than
+the headline. Within the column, lines split into paragraphs on vertical gap *or* a change in
+font size; the gap alone merges "Keep the party going with Lay's" into the line beneath it.
+
+**Taxonomy** resolves brand, category and occasion against `taxonomy.yaml`. Matching is fuzzy
+and space-insensitive, so OCR slips like `Oadbury`, `SUPERYOV` and `Vembleyrange` still land.
+Brand carries a source, because the evidence differs in strength:
+
+| Source | Confidence | Meaning |
+| --- | --- | --- |
+| `logo` | 0.95 | wordmark in the top-right corner, i.e. the advertiser |
+| `copy` | 0.85 | named in the headline or subheadline |
+| `product` | 0.50 | only legible on a pack in the artwork |
+
+That last tier matters. A "Chocolate Paradise" category banner shows Cadbury and Ferrero packs
+without being an ad for either, so those are recorded but flagged weak and greyed out in the
+dashboard.
+
+**Visual** samples the left margin strip — inboard of the rounded corners, outboard of the
+text — and calls the background flat, gradient or photo.
+
+One more wrinkle: OCR regularly drops the space between words, giving `Keepthe party` and
+`Getsupplements,massagers`. Those are repaired with dictionary splitting, guarded so it never
+touches a name in `taxonomy.yaml`. Without the guard, `Saffola` becomes `S a ff ola`.
+
+### Extending it
+
+`taxonomy.yaml` is the whole knowledge base — brands with their aliases and category, category
+keywords, occasion keywords. Add entries as you meet new advertisers; nothing is hard-coded.
+Anything you add is also protected from word-splitting automatically.
+
+### Why there is no vision model
+
+On the first 28 creatives this resolves a brand on 23. The five misses are all Blinkit's own
+first-party banners ("Spotless home, fresh clothes", "Gifts they'll truly love"), which
+advertise no brand at all, so a blank is the right answer. Every advertiser creative resolved.
+
+That works because Blinkit writes the brand into the copy or shows a wordmark that OCR reads,
+and states the occasion outright ("Enjoy the monsoon", "The perfect Rakhi gifts start here").
+A local VLM small enough for a 4GB card would be *worse* at exactly the mid-tier Indian brands
+in this set. Revisit only if logo-only creatives start showing up in volume.
+
 ## Location modes
+
+The in-app change, as of the current Blinkit build:
+
+1. Tap the address line under the delivery-time header (the line with the pincode).
+2. Type the area or pincode into **Search for area, street name...**
+3. Tap the first suggestion card.
+4. On the map, tap **Confirm Location** — not the small **Change** link.
+5. If a promo lands on home (Ambulance and similar), tap the **X**. Layout of that
+   popup changes by city, so dismissal is by Close control, not by copy.
 
 Set `location_mode`, or override per run with `--location-mode`.
 
-`geo` sets emulator GPS via `adb emu geo fix` from each location's `lat`/`lon`, then taps
-"use current location". Emulator only, and the most reliable. `ui` types `search_query`
-into the in-app picker and takes the first suggestion; works on phones but depends on
-selectors that change. `manual` captures wherever the device already is.
+`ui` is the default and follows the steps above. `geo` sets emulator GPS via
+`adb emu geo fix`, then taps **Use current location** and still confirms the map.
+`manual` captures wherever the device already is.
+
+The dashboard shows each creative's cities, pincodes and scrape dates (IST), and filters by
+them. The page is a white static HTML file at `data/dashboard.html`.
 
 ## Scheduling
 
@@ -203,7 +283,7 @@ like `[0, 1800]` so it does not begin at the same second each time.
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-28 tests covering detection, the empty-overlay and occlusion rules, the scroll cap,
+Tests covering detection, the empty-overlay and occlusion rules, the scroll cap,
 interstitial matching, dedupe, config parsing, and jitter. `test_carousel.py` drives
 exhaustion against a simulated pager — a ring of slides that advances on swipe and
 optionally on its own timer — to check that a lap ends on returning to the first slide,

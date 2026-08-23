@@ -1,0 +1,88 @@
+# Brand, category and occasion knowledge used by `analyse`.
+# Aliases are matched fuzzily, so OCR slips like "Oadbury" or "SUPERYOV" still resolve.
+# Add brands as you see them; nothing here is hard-coded in the source.
+
+brands:
+  Cadbury: {category: Chocolate, aliases: [cadbury, dairy milk, silk, bournville]}
+  Nestle: {category: Chocolate, aliases: [nestle, kitkat, kit kat, munch, milkybar]}
+  Amul: {category: Dairy, aliases: [amul]}
+  Lay's: {category: Snacks, aliases: [lays, lay s]}
+  Kurkure: {category: Snacks, aliases: [kurkure]}
+  Bingo: {category: Snacks, aliases: [bingo]}
+  Haldiram's: {category: Snacks, aliases: [haldiram, haldirams]}
+  SuperYou: {category: Snacks, aliases: [superyou, super you]}
+  McCain: {category: Frozen Food, aliases: [mccain]}
+  Saffola: {category: Breakfast, aliases: [saffola]}
+  Kellogg's: {category: Breakfast, aliases: [kelloggs, kellogg, chocos]}
+  Quaker: {category: Breakfast, aliases: [quaker]}
+  Tata Sampann: {category: Staples, aliases: [tata sampann, sampann, tata]}
+  Fortune: {category: Staples, aliases: [fortune]}
+  Coca-Cola: {category: Beverages, aliases: [coca cola, cocacola, coke, thums up, sprite]}
+  Pepsi: {category: Beverages, aliases: [pepsi, mountain dew, mirinda]}
+  Red Bull: {category: Beverages, aliases: [red bull, redbull]}
+  Amayu: {category: Beverages, aliases: [amayu]}
+  Tropicana: {category: Beverages, aliases: [tropicana]}
+  L'Oreal: {category: Hair Care, aliases: [loreal, l oreal, loreal paris]}
+  WishCare: {category: Hair Care, aliases: [wishcare, wish care]}
+  Dove: {category: Personal Care, aliases: [dove]}
+  Nivea: {category: Personal Care, aliases: [nivea]}
+  Himalaya: {category: Personal Care, aliases: [himalaya]}
+  Mamaearth: {category: Personal Care, aliases: [mamaearth, mama earth]}
+  Whiskas: {category: Pet Care, aliases: [whiskas]}
+  Pedigree: {category: Pet Care, aliases: [pedigree]}
+  Drools: {category: Pet Care, aliases: [drools]}
+  Titan: {category: Watches, aliases: [titan]}
+  Safari: {category: Luggage, aliases: [safari]}
+  American Tourister: {category: Luggage, aliases: [american tourister]}
+  Vembley: {category: Fashion, aliases: [vembley]}
+  Ray-Ban: {category: Eyewear, aliases: [ray ban, rayban]}
+  Meta: {category: Electronics, aliases: [meta]}
+  Portronics: {category: Electronics, aliases: [portronics]}
+  boAt: {category: Electronics, aliases: [boat lifestyle, boat audio]}
+  Thomas Cook: {category: Financial Services, aliases: [thomas cook]}
+  Ferrero Rocher: {category: Chocolate, aliases: [ferrero, rocher]}
+  Pampers: {category: Baby Care, aliases: [pampers]}
+  Durex: {category: Wellness, aliases: [durex]}
+
+# Category keywords apply when no brand resolves, or the brand is unknown.
+categories:
+  Chocolate: [chocolate, choco, cocoa]
+  Snacks: [chips, namkeen, crisps, wafer, crunchy, snack]
+  Beverages: [juice, drink, soda, cola, beverage, thirst, refreshing]
+  Breakfast: [oats, cereal, breakfast, muesli, cornflakes]
+  Staples: [atta, rice, dal, masala, spices, cooking oil, ghee]
+  Hair Care: [hair, shampoo, conditioner, frizz, dandruff]
+  Skin Care: [skin, face wash, moisturiser, moisturizer, sunscreen, serum]
+  Personal Care: [soap, body wash, deodorant, grooming]
+  Pet Care: [pet, dog, cat, kitten, puppy, nutrition for pets]
+  Baby Care: [baby, diaper, infant]
+  Electronics: [headphone, earbuds, speaker, charger, smart, gadget, glasses]
+  Fashion: [fashion, apparel, clothing, wear, style]
+  Watches: [watch, watches, timepiece]
+  Luggage: [luggage, trolley, backpack, suitcase]
+  Gifting: [gift, gifts, gifting, hamper]
+  Financial Services: [forex, card, payment, markup, wallet]
+  Home: [home, kitchenware, cleaning, detergent]
+  Wellness: [health, wellness, protein, immunity, vitamin]
+
+# Occasions are usually stated outright in the copy.
+occasions:
+  Raksha Bandhan: [rakhi, raksha bandhan, sibling, bhai, sister bond, sweetest bond]
+  Diwali: [diwali, deepavali, festival of lights]
+  Holi: [holi, rang]
+  Onam: [onam, sadya]
+  Navratri: [navratri, garba, fasting, vrat]
+  Ganesh Chaturthi: [ganesh chaturthi, ganpati, modak]
+  Christmas: [christmas, xmas, santa]
+  New Year: [new year, nye]
+  Independence Day: [independence day, tiranga, freedom sale]
+  Valentine's Day: [valentine, love day]
+  Eid: [eid, ramadan, iftar]
+  Wedding: [wedding, shaadi, bridal]
+  Birthday: [birthday, cake day]
+  Monsoon: [monsoon, rain, rainy, barish]
+  Summer: [summer, heat, cooling, chill out]
+  Winter: [winter, cold, warm up]
+  Party: [party, celebration, get together, hosting, guests]
+  Late Night: [midnight, late night, night craving, 2 am]
+  Breakfast Moment: [morning, breakfast, start your day]

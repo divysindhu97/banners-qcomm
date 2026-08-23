@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS sightings (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     phash           TEXT NOT NULL REFERENCES creatives(phash),
     location        TEXT NOT NULL,
+    city            TEXT,
+    pincode         TEXT,
     surface         TEXT NOT NULL,
     slot_index      INTEGER NOT NULL,
     captured_at     TEXT NOT NULL,
@@ -26,9 +28,62 @@ CREATE TABLE IF NOT EXISTS sightings (
     screenshot_path TEXT
 );
 
+-- Brands are not a fixed list. Every wordmark the analyser reads off a creative
+-- lands here and is available to match against on the next run, so coverage
+-- grows with the archive instead of with hand-maintained config.
+-- Usage counts are deliberately not stored here; they are derived from
+-- `attributes` so that re-analysing the library cannot inflate them.
+CREATE TABLE IF NOT EXISTS discovered_brands (
+    slug        TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    category    TEXT,
+    origin      TEXT NOT NULL,
+    first_seen  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attributes (
+    phash            TEXT PRIMARY KEY REFERENCES creatives(phash),
+    headline         TEXT,
+    subheadline      TEXT,
+    cta              TEXT,
+    has_ad_badge     INTEGER NOT NULL DEFAULT 0,
+    archetype        TEXT,
+    text_side        TEXT,
+    brand            TEXT,
+    brand_source     TEXT,
+    brand_confidence REAL,
+    category         TEXT,
+    occasion         TEXT,
+    dominant_colour  TEXT,
+    palette          TEXT,
+    background       TEXT,
+    ocr_text         TEXT,
+    analysed_at      TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sightings_phash ON sightings(phash);
 CREATE INDEX IF NOT EXISTS idx_sightings_time ON sightings(captured_at);
+CREATE INDEX IF NOT EXISTS idx_attributes_brand ON attributes(brand);
 """
+
+ATTRIBUTE_FIELDS = (
+    "headline",
+    "subheadline",
+    "cta",
+    "has_ad_badge",
+    "archetype",
+    "text_side",
+    "brand",
+    "brand_source",
+    "brand_confidence",
+    "category",
+    "occasion",
+    "dominant_colour",
+    "palette",
+    "background",
+    "ocr_text",
+)
 
 
 def _now() -> str:
@@ -46,8 +101,19 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
         self._hashes: list[str] = [r["phash"] for r in self.conn.execute("SELECT phash FROM creatives")]
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a database was first created."""
+        for table, column, ddl in (
+            ("sightings", "city", "TEXT"),
+            ("sightings", "pincode", "TEXT"),
+        ):
+            existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         self.conn.close()
@@ -81,12 +147,15 @@ class Store:
         slot_index: int,
         device_serial: str | None = None,
         screenshot_path: str | None = None,
+        city: str = "",
+        pincode: str = "",
     ) -> None:
         now = _now()
         self.conn.execute(
-            "INSERT INTO sightings (phash, location, surface, slot_index, captured_at, device_serial, screenshot_path)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (phash, location, surface, slot_index, now, device_serial, screenshot_path),
+            "INSERT INTO sightings"
+            " (phash, location, city, pincode, surface, slot_index, captured_at, device_serial, screenshot_path)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (phash, location, city, pincode, surface, slot_index, now, device_serial, screenshot_path),
         )
         self.conn.execute(
             "UPDATE creatives SET last_seen = ?, sighting_count = sighting_count + 1 WHERE phash = ?",
@@ -94,9 +163,95 @@ class Store:
         )
         self.conn.commit()
 
+    def delete_creative(self, phash: str) -> Path | None:
+        """Drop a creative and its sightings/attributes. Returns the file path if known."""
+        row = self.conn.execute("SELECT file_path FROM creatives WHERE phash = ?", (phash,)).fetchone()
+        self.conn.execute("DELETE FROM attributes WHERE phash = ?", (phash,))
+        self.conn.execute("DELETE FROM sightings WHERE phash = ?", (phash,))
+        self.conn.execute("DELETE FROM creatives WHERE phash = ?", (phash,))
+        self._hashes = [h for h in self._hashes if h != phash]
+        self.conn.commit()
+        return Path(row["file_path"]) if row else None
+
     def creative_path(self, phash: str) -> str | None:
         row = self.conn.execute("SELECT file_path FROM creatives WHERE phash = ?", (phash,)).fetchone()
         return row["file_path"] if row else None
+
+    def creatives(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM creatives ORDER BY first_seen, phash"))
+
+    def analysed_hashes(self) -> set[str]:
+        return {row["phash"] for row in self.conn.execute("SELECT phash FROM attributes")}
+
+    def save_attributes(self, phash: str, values: dict) -> None:
+        columns = ", ".join(("phash", *ATTRIBUTE_FIELDS, "analysed_at"))
+        placeholders = ", ".join("?" * (len(ATTRIBUTE_FIELDS) + 2))
+        row = [phash, *(values.get(field) for field in ATTRIBUTE_FIELDS), _now()]
+        self.conn.execute(f"INSERT OR REPLACE INTO attributes ({columns}) VALUES ({placeholders})", row)
+        self.conn.commit()
+
+    def library(self) -> list[sqlite3.Row]:
+        """Creatives joined with their attributes, for reporting and the dashboard."""
+        return list(
+            self.conn.execute(
+                "SELECT c.*, a.* FROM creatives c LEFT JOIN attributes a ON a.phash = c.phash"
+                " ORDER BY a.brand IS NULL, a.brand, c.first_seen"
+            )
+        )
+
+    def known_brands(self) -> list[sqlite3.Row]:
+        """Learned brands with a live count of the creatives using each one."""
+        return list(
+            self.conn.execute(
+                "SELECT b.*, (SELECT COUNT(*) FROM attributes a WHERE a.brand = b.name) AS creatives"
+                " FROM discovered_brands b ORDER BY creatives DESC, b.name"
+            )
+        )
+
+    def remember_brand(self, slug: str, name: str, category: str, origin: str) -> None:
+        """Record a brand read off a creative, or refresh one already known."""
+        now = _now()
+        self.conn.execute(
+            "INSERT INTO discovered_brands (slug, name, category, origin, first_seen, last_seen)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(slug) DO UPDATE SET"
+            "   last_seen = excluded.last_seen,"
+            "   category = COALESCE(NULLIF(discovered_brands.category, ''), excluded.category)",
+            (slug, name, category, origin, now, now),
+        )
+        self.conn.commit()
+
+    def forget_brands(self) -> None:
+        self.conn.execute("DELETE FROM discovered_brands")
+        self.conn.commit()
+
+    def sightings_for(self, phash: str) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT location, city, pincode, captured_at FROM sightings"
+                " WHERE phash = ? ORDER BY captured_at",
+                (phash,),
+            )
+        )
+
+    def place_summaries(self) -> dict[str, dict]:
+        """Per creative: first/last scrape time and the cities it has appeared in."""
+        rows = self.conn.execute(
+            "SELECT phash,"
+            "       MIN(captured_at) AS first_at,"
+            "       MAX(captured_at) AS last_at,"
+            "       GROUP_CONCAT(DISTINCT CASE"
+            "         WHEN COALESCE(city, '') != '' AND COALESCE(pincode, '') != ''"
+            "           THEN city || ' ' || pincode"
+            "         WHEN COALESCE(city, '') != '' THEN city"
+            "         ELSE location"
+            "       END) AS places,"
+            "       GROUP_CONCAT(DISTINCT CASE"
+            "         WHEN COALESCE(city, '') != '' THEN city ELSE location"
+            "       END) AS cities"
+            " FROM sightings GROUP BY phash"
+        )
+        return {row["phash"]: dict(row) for row in rows}
 
     def stats(self) -> dict[str, int]:
         creatives = self.conn.execute("SELECT COUNT(*) AS n FROM creatives").fetchone()["n"]

@@ -26,7 +26,7 @@ class CaptureConfig:
 @dataclass
 class DetectionConfig:
     min_width_ratio: float = 0.80
-    min_aspect: float = 0.22
+    min_aspect: float = 0.45
     max_aspect: float = 1.00
     min_height_px: int = 120
     # Fractions of screen height hidden behind sticky overlays.
@@ -52,7 +52,7 @@ class DetectionConfig:
 @dataclass
 class FeedConfig:
     scroll_steps: int = 20
-    carousel_max_slides: int = 18
+    carousel_max_slides: int = 25
     # Consecutive slides already recorded this run before a carousel is done.
     carousel_stall_limit: int = 3
     # Tallest banner we expect, as a fraction of screen height. Scrolling is
@@ -66,6 +66,24 @@ class Location:
     search_query: str = ""
     lat: float | None = None
     lon: float | None = None
+    # Recorded with every sighting so the archive can be sliced by postcode, and
+    # appended to the query in `ui` mode where it disambiguates common area names.
+    pincode: str = ""
+    city: str = ""
+
+    @property
+    def label(self) -> str:
+        if self.city and self.pincode:
+            return f"{self.city} {self.pincode}"
+        return self.city or self.name
+
+    @property
+    def address_query(self) -> str:
+        """What to type into the in-app picker: locality plus pincode when we have one."""
+        query = self.search_query or self.label
+        if self.pincode and self.pincode not in query:
+            return f"{query} {self.pincode}"
+        return query
 
 
 @dataclass

@@ -150,6 +150,14 @@ class Device:
         end_y = max(int(height * 0.05), int(height * (0.80 - distance)))
         self.d.swipe(x, start_y, x, end_y, self.human.swipe_duration())
 
+    def scroll_home_to_top(self, steps: int = 6) -> None:
+        """Swipe down so the address line is on screen after a long feed sweep."""
+        width, height = self.window_size()
+        x = width // 2
+        for _ in range(steps):
+            self.d.swipe(x, int(height * 0.28), x, int(height * 0.78), 0.2)
+            time.sleep(0.35)
+
     def swipe_carousel(self, rect: Rect) -> None:
         self.counts["carousel_swipe"] += 1
         y = self.human.jitter(rect.top + rect.height // 2, max(1, rect.height // 6))

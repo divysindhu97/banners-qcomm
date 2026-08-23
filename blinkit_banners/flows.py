@@ -12,15 +12,27 @@ from .hierarchy import Node, Rect
 
 # Blinkit ships UI changes often. Every selector guess lives here so there is a
 # single place to correct after running `discover`.
+#
+# Location change, as of the screenshots:
+#   1. tap the address line in the home header
+#   2. type into "Search for area, street name..."
+#   3. tap a suggestion card
+#   4. tap "Confirm Location" on the map
+#   5. dismiss whatever interstitial lands on home (layout varies by city)
 LOCATION_CHIP_HINTS = ("location", "address", "deliver", "delivery")
-CURRENT_LOCATION_TEXT = re.compile(r"current location|use my location|locate me|detect location|gps", re.IGNORECASE)
-CONFIRM_TEXT = re.compile(r"confirm|continue|proceed|select this|save", re.IGNORECASE)
-# Interstitials that appear on relaunch (notification opt-in, rating prompts) and
-# cover the feed. Anchored so feed copy cannot match by accident.
+PINCODE_RE = re.compile(r"\b\d{6}\b")
+SEARCH_FIELD_HINT = re.compile(r"search for (area|a new area|street|locality)", re.IGNORECASE)
+CURRENT_LOCATION_TEXT = re.compile(r"use current location|use my location|locate me|detect location", re.IGNORECASE)
+CONFIRM_LOCATION_TEXT = re.compile(r"confirm location", re.IGNORECASE)
+CONFIRM_TEXT = re.compile(r"confirm location|confirm|continue|proceed|select this", re.IGNORECASE)
+RECENTLY_SEARCHED = re.compile(r"recently searched", re.IGNORECASE)
+# Interstitials that appear on relaunch and after a location change. Anchored so
+# feed copy cannot match by accident. The Ambulance-style promo is a Close "X".
 DISMISS_TEXT = re.compile(
     r"^(no,?\s*thanks|not now|maybe later|not right now|skip|dismiss|later|don'?t allow|deny|close)$",
     re.IGNORECASE,
 )
+CLOSE_DESC = re.compile(r"^(close|dismiss|cancel)$", re.IGNORECASE)
 
 
 def safe_scroll_fraction(cfg: Config) -> float:
@@ -35,10 +47,21 @@ def safe_scroll_fraction(cfg: Config) -> float:
 
 
 def find_dismissible(root: Node) -> Node | None:
-    """A 'No, thanks'-style control on a modal covering the feed."""
+    """A control that closes a modal covering the feed.
+
+    Two shapes show up. Text buttons ('No, thanks') and icon buttons whose
+    content-desc or resource-id is Close — the Ambulance promo is the latter.
+    """
     for node in root.walk():
+        if not node.bounds.area:
+            continue
         label = (node.text or node.content_desc).strip()
-        if label and DISMISS_TEXT.match(label) and node.bounds.area:
+        if label and DISMISS_TEXT.match(label):
+            return node
+        if node.clickable and CLOSE_DESC.match((node.content_desc or "").strip()):
+            return node
+        segment = node.resource_id.rsplit("/", 1)[-1].lower()
+        if node.clickable and segment in {"close", "iv_close", "btn_close", "icon_close"}:
             return node
     return None
 
@@ -52,6 +75,14 @@ def dismiss_interstitial(device: Device, root: Node) -> bool:
     return True
 
 
+def dismiss_until_home(device: Device, attempts: int = 3) -> None:
+    """Popups after a location change vary; keep closing them until the feed is clear."""
+    for _ in range(attempts):
+        root = device.dump()
+        if not dismiss_interstitial(device, root):
+            return
+
+
 @dataclass
 class SweepSummary:
     location: str
@@ -60,10 +91,15 @@ class SweepSummary:
     new_creatives: int
     carousel_visits: int = 0
 
+    @property
+    def duplicates(self) -> int:
+        return max(0, self.sightings - self.new_creatives)
+
     def line(self) -> str:
         return (
             f"{self.location}: {self.screens} screens, {self.sightings} banner sightings, "
-            f"{self.new_creatives} new creatives, {self.carousel_visits} carousel visits"
+            f"{self.new_creatives} new, {self.duplicates} already in library, "
+            f"{self.carousel_visits} carousel visits"
         )
 
 
@@ -171,112 +207,257 @@ def set_location(device: Device, location: Location, mode: str) -> None:
     """Point the app at a delivery location using the configured strategy."""
     if mode == "manual":
         return
+    _return_to_home(device)
+    device.scroll_home_to_top()
+    # Pin emulator GPS to the same city we are about to select. If GPS stays in
+    # Mountain View, Blinkit shows 'Unserviceable area' and there is no feed.
+    if location.lat is not None and location.lon is not None:
+        try:
+            device.geo_fix(location.lat, location.lon)
+        except DeviceError:
+            if mode == "geo":
+                raise
     if mode == "geo":
-        if location.lat is None or location.lon is None:
-            raise DeviceError(f"{location.name!r} needs lat/lon for location_mode: geo.")
-        device.geo_fix(location.lat, location.lon)
         _use_current_location(device)
+        dismiss_until_home(device)
         return
     if mode == "ui":
-        if not location.search_query:
-            raise DeviceError(f"{location.name!r} needs search_query for location_mode: ui.")
-        _search_for_address(device, location.search_query)
+        query = location.address_query
+        if not query:
+            raise DeviceError(f"{location.name!r} needs search_query or a pincode for location_mode: ui.")
+        _search_for_address(device, query)
+        dismiss_until_home(device)
         return
     raise DeviceError(f"Unknown location_mode {mode!r}; expected geo, ui or manual.")
 
 
-def _use_current_location(device: Device, timeout: float = 20.0) -> None:
-    """After a geo fix, make the app re-read GPS rather than typing an address."""
-    _open_location_picker(device)
+def _return_to_home(device: Device, attempts: int = 6) -> None:
+    """Leave a leftover picker, map, or product-search screen from a previous city."""
+    for _ in range(attempts):
+        root = device.dump()
+        on_map = find_confirm_location(root) is not None
+        on_location_search = find_location_search_field(root) is not None
+        on_home = find_location_chip(root) is not None and not on_map and not on_location_search
+        if on_home:
+            return
+        device.back()
+        time.sleep(1.2)
+    device.scroll_home_to_top()
 
+
+def _wait_for(device: Device, finder, timeout: float, error: str) -> Node:
     deadline = time.time() + timeout
+    last: Node | None = None
     while time.time() < deadline:
         root = device.dump()
-        target = next(
-            (n for n in root.walk() if n.clickable and CURRENT_LOCATION_TEXT.search(f"{n.text} {n.content_desc}")),
-            None,
-        )
-        if target is not None:
-            device.tap(target.bounds)
-            time.sleep(4.0)
-            _tap_confirm(device)
-            time.sleep(3.0)
-            return
-        time.sleep(1.0)
+        last = finder(root)
+        if last is not None:
+            return last
+        time.sleep(0.6)
+    raise DeviceError(error)
 
-    raise DeviceError(
-        "Could not find a 'use current location' control in the address picker. Run "
-        "`discover` on that screen and adjust CURRENT_LOCATION_TEXT in flows.py."
+
+def _use_current_location(device: Device, timeout: float = 20.0) -> None:
+    """After a geo fix, tap 'Use current location' and confirm the map pin."""
+    _open_location_picker(device)
+    target = _wait_for(
+        device,
+        find_use_current_location,
+        timeout,
+        "Could not find 'Use current location' in the address picker. Run `discover` "
+        "on that screen and check CURRENT_LOCATION_TEXT in flows.py.",
     )
+    device.tap(target.bounds)
+    time.sleep(2.0)
+    _confirm_on_map(device)
 
 
 def _search_for_address(device: Device, query: str, timeout: float = 20.0) -> None:
+    """Type an area or pincode, pick a suggestion, confirm the pin on the map."""
     _open_location_picker(device)
 
-    field = device.d(className="android.widget.EditText")
-    if not field.wait(timeout=timeout):
-        raise DeviceError("Location search field never appeared after tapping the location chip.")
-    field.clear_text()
-    field.set_text(query)
-    time.sleep(2.5)
+    field = _wait_for(
+        device,
+        find_location_search_field,
+        timeout,
+        "Location search field never appeared after tapping the address line. "
+        "The tap may have hit the product search bar instead.",
+    )
+    device.tap(field.bounds)
+    time.sleep(0.4)
+    typed = device.d(className="android.widget.EditText")
+    if typed.exists(timeout=3):
+        typed.set_text(query)
+    else:
+        raise DeviceError("Could not focus the location search field to type an address.")
+    time.sleep(1.5)
 
-    result = _first_search_result(device)
-    if result is None:
-        raise DeviceError(f"No location suggestions appeared for {query!r}.")
-    device.tap(result.bounds)
+    suggestion = _wait_for(
+        device,
+        find_search_suggestion,
+        timeout,
+        f"No location suggestions appeared for {query!r}.",
+    )
+    device.tap(suggestion.bounds)
+    time.sleep(2.0)
+    _confirm_on_map(device, timeout=35.0)
+
+
+def _confirm_on_map(device: Device, timeout: float = 20.0) -> None:
+    """The map screen is its own step: wait for 'Confirm Location' and tap it."""
+    button = _wait_for(
+        device,
+        find_confirm_location,
+        timeout,
+        "The map 'Confirm Location' button never appeared after picking an address.",
+    )
+    device.tap(button.bounds)
     time.sleep(3.0)
 
-    _tap_confirm(device)
-    time.sleep(4.0)
+
+def _open_location_picker(device: Device, attempts: int = 3, timeout: float = 9.0) -> None:
+    """Tap the address line and wait for the picker sheet to slide up.
+
+    The sheet takes a couple of seconds on a warm app and much longer on a cold
+    one, and a tap that lands while the feed is still settling is swallowed
+    entirely. So poll for the field, and tap again rather than give up on the
+    first miss.
+    """
+    for _ in range(attempts):
+        chip = find_location_chip(device.dump())
+        if chip is None:
+            raise DeviceError(
+                "Could not find the address line on the home header. Run `discover` and "
+                "check the top of annotated.png."
+            )
+        device.tap(chip.bounds)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(0.6)
+            if find_location_search_field(device.dump()) is not None:
+                return
+
+        # A swallowed tap leaves us on home; one that opened something else has
+        # to be backed out of before the address line is reachable again.
+        if find_location_chip(device.dump()) is None:
+            device.back()
+            time.sleep(1.2)
+
+    raise DeviceError(
+        "Tapped the address line but the location picker did not open. "
+        "Run `discover` and check the header on annotated.png."
+    )
 
 
-def _open_location_picker(device: Device) -> None:
-    chip = _find_location_chip(device)
-    if chip is None:
-        raise DeviceError(
-            "Could not find the location chip on the home header. Run `discover` and "
-            "add the correct wording to LOCATION_CHIP_HINTS in flows.py."
-        )
-    device.tap(chip.bounds)
-    time.sleep(2.5)
+def find_location_chip(root: Node) -> Node | None:
+    """The tappable address under the delivery-time header.
 
-
-def _find_location_chip(device: Device) -> Node | None:
-    root = device.dump()
+    On the current Blinkit build the visible address (`subtitle2`) is not itself
+    clickable — the parent `container` is. Prefer the smallest clickable ancestor
+    so we do not hit the full-screen root or the profile icon.
+    """
     header_limit = root.bounds.height * 0.22 if root.bounds.height else 400
-
-    best: Node | None = None
+    scored: list[tuple[int, Node]] = []
     for node in root.walk():
-        if node.bounds.top > header_limit or not node.clickable:
+        if node.bounds.top > header_limit:
             continue
-        haystack = f"{node.resource_id} {node.content_desc} {node.text}".lower()
+        text = (node.text or "").strip()
+        haystack = f"{node.resource_id} {node.content_desc} {text}".lower()
+        segment = node.resource_id.rsplit("/", 1)[-1]
+        if "systemui" in node.resource_id or "location in use" in haystack:
+            continue
+        if text.lower().startswith("pin location"):
+            continue
+        score = 0
+        if segment == "subtitle2":
+            score += 4
+        if PINCODE_RE.search(text):
+            score += 3
         if any(hint in haystack for hint in LOCATION_CHIP_HINTS):
-            if best is None or node.bounds.area > best.bounds.area:
-                best = node
-    return best
+            score += 2
+        if text.count(",") >= 1 and len(text) >= 12:
+            score += 1
+        if not score:
+            continue
+        # Tap the label's own box. The parent container is clickable but also
+        # contains the 'km away' chip and wallet; clicking its centre misses the picker.
+        scored.append((score, node))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1].bounds.area))
+    return scored[0][1]
 
 
-def _first_search_result(device: Device) -> Node | None:
-    root = device.dump()
-    field = next((n for n in root.walk() if "EditText" in n.cls), None)
+def _smallest_clickable(node: Node, header_limit: float | None = None) -> Node | None:
+    candidates = []
+    chain = [node, *node.ancestors()]
+    for item in chain:
+        if not item.clickable:
+            continue
+        if header_limit is not None and item.bounds.top > header_limit:
+            continue
+        candidates.append(item)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item.bounds.area)
+
+
+def find_location_search_field(root: Node) -> Node | None:
+    """The picker/map address field, never the homepage 'Search for atta, dal' bar."""
+    for node in root.walk():
+        if "EditText" not in node.cls:
+            continue
+        blob = f"{node.hint} {node.text} {node.content_desc}"
+        if SEARCH_FIELD_HINT.search(blob):
+            return node
+    return None
+
+
+def find_use_current_location(root: Node) -> Node | None:
+    for node in root.walk():
+        if CURRENT_LOCATION_TEXT.search(f"{node.text} {node.content_desc}"):
+            return _smallest_clickable(node)
+        if node.resource_id.rsplit("/", 1)[-1] == "use_my_location" and node.clickable:
+            return node
+    return None
+
+
+def find_search_suggestion(root: Node) -> Node | None:
+    """First suggestion card under the search field, never 'Use current location'."""
+    field = next((node for node in root.walk() if "EditText" in node.cls), None)
     cutoff = field.bounds.bottom if field else 0
-
-    rows = [
-        node
-        for node in root.walk()
-        if node.clickable and node.bounds.top > cutoff and node.bounds.height > 40 and _has_text(node)
-    ]
-    rows.sort(key=lambda n: n.bounds.top)
+    rows = []
+    for node in root.walk():
+        if not node.clickable or node.bounds.top <= cutoff or node.bounds.height < 60:
+            continue
+        blob = f"{node.text} {node.content_desc}"
+        if CURRENT_LOCATION_TEXT.search(blob) or RECENTLY_SEARCHED.search(blob):
+            continue
+        if CLOSE_DESC.match((node.content_desc or "").strip()):
+            continue
+        if not _has_text(node):
+            continue
+        rows.append(node)
+    rows.sort(key=lambda node: node.bounds.top)
     return rows[0] if rows else None
 
 
-def _tap_confirm(device: Device) -> bool:
-    root = device.dump()
+def find_confirm_location(root: Node) -> Node | None:
+    """The green button at the bottom of the map. Label often lives on a child view."""
+    matches: list[Node] = []
     for node in root.walk():
-        if node.clickable and CONFIRM_TEXT.search(f"{node.text} {node.content_desc}"):
-            device.tap(node.bounds)
-            return True
-    return False
+        segment = node.resource_id.rsplit("/", 1)[-1]
+        if segment == "tv_toolbar_title":
+            continue
+        blob = f"{node.text} {node.content_desc}"
+        if segment in {"enter_address", "btn_confirm", "confirm_location"} or CONFIRM_LOCATION_TEXT.search(blob):
+            target = _smallest_clickable(node)
+            if target is not None:
+                matches.append(target)
+    if not matches:
+        return None
+    return max(matches, key=lambda node: (node.bounds.top, node.bounds.area))
 
 
 def _has_text(node: Node) -> bool:

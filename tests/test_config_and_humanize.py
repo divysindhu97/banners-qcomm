@@ -19,6 +19,8 @@ YAML = textwrap.dedent(
     location_mode: ui
     locations:
       - name: gurgaon
+        city: Gurugram
+        pincode: "122002"
         lat: 28.4949
         lon: 77.0895
         search_query: DLF Phase 3, Gurugram
@@ -48,7 +50,12 @@ def test_loads_locations_and_mode(tmp_path):
     assert cfg.detection.strict_ids is True
     assert [loc.name for loc in cfg.locations] == ["gurgaon", "bengaluru"]
     assert cfg.locations[0].lat == 28.4949
+    assert cfg.locations[0].city == "Gurugram"
+    assert cfg.locations[0].pincode == "122002"
+    assert cfg.locations[0].label == "Gurugram 122002"
+    assert cfg.locations[0].address_query == "DLF Phase 3, Gurugram 122002"
     assert cfg.locations[1].lat is None
+    assert cfg.locations[1].label == "bengaluru"
 
 
 def test_disabled_human_is_deterministic():
@@ -83,3 +90,10 @@ def test_shuffle_can_be_turned_off():
     names = [f"city-{i}" for i in range(10)]
     human = Human(HumanConfig(enabled=True, shuffle_locations=False), seed=1)
     assert human.order(names) == names
+
+
+def test_project_config_has_five_metros():
+    cfg = config_module.load("config.yaml")
+    assert [loc.city for loc in cfg.locations] == ["Delhi", "Mumbai", "Chennai", "Hyderabad", "Kolkata"]
+    assert [loc.pincode for loc in cfg.locations][-1] == "700033"
+    assert all(loc.pincode and loc.lat is not None and loc.lon is not None for loc in cfg.locations)

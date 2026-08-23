@@ -20,8 +20,9 @@ detection:
   # 0.40 admits the half-width "Events this week" promo tiles (586/1280) while
   # still excluding product cards (379/1280).
   min_width_ratio: 0.40
-  # height / width bounds. The hero banner is 0.70, the promo tiles 0.71.
-  min_aspect: 0.22
+  # height / width. Hero ~0.70, promo tiles ~0.71, wide store promos ~0.50.
+  # Occasion headers and product rails sit below 0.40.
+  min_aspect: 0.45
   max_aspect: 1.00
   min_height_px: 120
   # Feed content scrolls *underneath* the sticky overlays, so anything in these
@@ -59,7 +60,7 @@ feed:
   scroll_steps: 20
   # Upper bound on one lap. Exhaustion normally ends earlier, on returning to the
   # slide it started from.
-  carousel_max_slides: 18
+  carousel_max_slides: 25
   # Consecutive slides already recorded this run before giving up. Guards against
   # a carousel that never cleanly returns to its first slide, and makes re-walking
   # an already-covered carousel cheap.
@@ -88,17 +89,42 @@ human:
   tap_jitter_px: 12
   shuffle_locations: true
 
-# geo:    set emulator GPS via `adb emu geo fix`, then tap "use current location"
-# ui:     type search_query into the in-app picker (works on physical phones)
+# geo:    set emulator GPS via `adb emu geo fix`, then tap "Use current location"
+# ui:     type into the address picker, pick a suggestion, tap Confirm Location
 # manual: never change location
-location_mode: geo
+location_mode: ui
 
+# One high-density pincode per city. Coordinates point at the centre of the
+# named locality, which is what Blinkit resolves a delivery area from; the
+# pincode is recorded on every sighting so the archive can be sliced by area.
 locations:
-  - name: gurgaon-dlf-phase-3
-    lat: 28.4949
-    lon: 77.0895
-    search_query: DLF Phase 3, Gurugram
-  - name: bengaluru-indiranagar
-    lat: 12.9784
-    lon: 77.6408
-    search_query: Indiranagar, Bengaluru
+  - name: delhi-connaught-place
+    city: Delhi
+    pincode: "110001"
+    lat: 28.6304
+    lon: 77.2177
+    search_query: Connaught Place, New Delhi
+  - name: mumbai-bandra-west
+    city: Mumbai
+    pincode: "400050"
+    lat: 19.0596
+    lon: 72.8295
+    search_query: Bandra West, Mumbai
+  - name: chennai-t-nagar
+    city: Chennai
+    pincode: "600017"
+    lat: 13.0418
+    lon: 80.2341
+    search_query: T. Nagar, Chennai
+  - name: hyderabad-banjara-hills
+    city: Hyderabad
+    pincode: "500034"
+    lat: 17.4126
+    lon: 78.4448
+    search_query: Banjara Hills, Hyderabad
+  - name: kolkata-tollygunge
+    city: Kolkata
+    pincode: "700033"
+    lat: 22.498
+    lon: 88.346
+    search_query: Tollygunge, Kolkata
