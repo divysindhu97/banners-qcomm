@@ -300,6 +300,40 @@ def test_purge_removes_headers_and_keeps_heroes(cfg, tmp_path):
     store.close()
 
 
+# Real hashes lifted from the library before the duplicates were purged.
+# Two frames of one L'Oreal spot, a frame of a different L'Oreal video, and a
+# static banner. Frames of one video sat up to 88 bits apart, two different
+# videos 124 apart, and the closest pair of unrelated banners 78 - which is why
+# the loose threshold is only ever applied between known video frames.
+INFAILLIBLE_A = "e1c11c78631eb7325aebe0041efbc0883fbad3086eeaaab3932aaccddb2aa135"
+INFAILLIBLE_B = "c1831c7ee0043739bf9fc0081eefe2041ffbd3084eea27f5bdaaa1732fa82485"
+OTHER_VIDEO = "a592e31906e39a619963d9a698ece91926279a668ce664ce6d93664e2e996767"
+STATIC_BANNER = "db6bd54b77398009d4801659c0460e3ce3425daca692c992a6b93b7a377f19bf"
+
+
+def test_video_frames_collapse_but_separate_videos_do_not(tmp_path):
+    store = Store(tmp_path / "banners.db")
+    store.add_creative(INFAILLIBLE_A, "a.png", 1024, 716, is_video=True)
+    store.add_creative(STATIC_BANNER, "b.png", 1024, 716)
+
+    # Another frame of the same spot folds into it.
+    assert store.match(INFAILLIBLE_B, 32, animated=True, animated_distance=104) == INFAILLIBLE_A
+    # A frame of a different video stays its own creative.
+    assert store.match(OTHER_VIDEO, 32, animated=True, animated_distance=104) is None
+    # The loose distance never applies to a still, even a badly matching one.
+    assert store.match(INFAILLIBLE_B, 32) is None
+    store.close()
+
+
+def test_a_still_never_folds_into_a_video(tmp_path):
+    """The loose threshold must not reach across from video frames to banners."""
+    store = Store(tmp_path / "banners.db")
+    store.add_creative(INFAILLIBLE_A, "a.png", 1024, 716, is_video=True)
+
+    assert store.match(STATIC_BANNER, 32, animated=True, animated_distance=104) is None
+    store.close()
+
+
 def test_jpeg_noise_does_not_create_a_duplicate(cfg, tmp_path):
     """Re-encoding shifts a few hash bits; dedupe_distance should absorb that."""
     store = Store(tmp_path / "banners.db")

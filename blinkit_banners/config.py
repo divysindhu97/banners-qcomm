@@ -21,6 +21,12 @@ class CaptureConfig:
     save_full_screenshots: bool = True
     phash_size: int = 16
     dedupe_distance: int = 32
+    # Video ads render a different frame on every read, so two frames of one
+    # video sit far further apart than two renders of a static banner. Measured
+    # on a real L'Oreal spot: frames of one video up to 88 bits apart, two
+    # different videos 124 apart. Only ever applied between creatives already
+    # known to come from video, so it cannot merge static banners.
+    video_dedupe_distance: int = 104
 
 
 @dataclass
@@ -55,6 +61,11 @@ class FeedConfig:
     carousel_max_slides: int = 25
     # Consecutive slides already recorded this run before a carousel is done.
     carousel_stall_limit: int = 3
+    # Seconds between the two reads that decide whether a slide is playing
+    # video. Long enough that any video has drawn a new frame, short enough
+    # that the carousel's own auto-rotation rarely lands inside the window.
+    # Set to 0 to skip the check.
+    animation_probe: float = 0.35
     # Tallest banner we expect, as a fraction of screen height. Scrolling is
     # capped so a banner this tall cannot fall between two captures.
     max_banner_height_ratio: float = 0.30

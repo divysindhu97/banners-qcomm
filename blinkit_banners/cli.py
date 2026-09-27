@@ -355,5 +355,50 @@ def dashboard(config_path: str, output_name: str) -> None:
     click.echo(f"{len(rows)} creatives -> {destination}")
 
 
+@cli.command("export")
+@CONFIG_OPTION
+@click.option("--output", "output_dir", default="site", show_default=True,
+              help="Directory to write the deployable static site into.")
+@click.option("--clean", is_flag=True, help="Empty the output directory first.")
+def export_site(config_path: str, output_dir: str, clean: bool) -> None:
+    """Build a self-contained static site: index.html plus every creative image.
+
+    The result needs no Python at runtime, so it can be dropped on Vercel,
+    Netlify, GitHub Pages or any bucket. Nothing else from the project is
+    copied — the database and the full-screen debug shots stay local.
+    """
+    import shutil
+
+    from .dashboard import render
+
+    cfg = config_module.load(config_path)
+    db = cfg.output_path / "banners.db"
+    if not Path(db).exists():
+        click.secho("No database yet - run `run` first.", fg="red")
+        sys.exit(1)
+
+    destination = Path(output_dir)
+    if clean and destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    store = Store(db)
+    rows = store.library()
+    missing = [row["phash"] for row in rows if not Path(row["file_path"]).exists()]
+    render(rows, destination / "index.html", store.place_summaries(), asset_dir=destination / "creatives")
+    store.close()
+
+    # A scraped ad archive has no business in search results.
+    (destination / "robots.txt").write_text("User-agent: *\nDisallow: /\n", encoding="utf-8")
+
+    images = list((destination / "creatives").glob("*.png"))
+    megabytes = sum(path.stat().st_size for path in images) / (1024 * 1024)
+    click.echo(f"{len(rows)} creatives -> {destination / 'index.html'}")
+    click.echo(f"{len(images)} images, {megabytes:.1f} MB total")
+    if missing:
+        click.secho(f"warning: {len(missing)} creatives have no image on disk", fg="yellow")
+    click.echo(f"\nDeploy with:  vercel deploy --prod  (from {destination.parent.resolve()})")
+
+
 if __name__ == "__main__":
     cli()

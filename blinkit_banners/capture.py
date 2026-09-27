@@ -34,6 +34,16 @@ _CHROME_PHRASES = (
     "explore all rakhi",
 )
 _PLUS_MORE = re.compile(r"\+\s*\d+\s*more", re.IGNORECASE)
+# Two reads of a static banner differ only by screenshot noise. Anything past
+# this means the slide redrew itself, which only video does.
+ANIMATION_MIN_DISTANCE = 20
+
+
+def frames_differ(first: Image.Image, second: Image.Image, hash_size: int) -> bool:
+    """True when two reads of the same slide show different pixels."""
+    before = imagehash.phash(first, hash_size=hash_size)
+    after = imagehash.phash(second, hash_size=hash_size)
+    return (before - after) > ANIMATION_MIN_DISTANCE
 
 
 @dataclass
@@ -93,10 +103,11 @@ class Collector:
         surface: str,
         slot_index: int,
         screenshot_path: str | None = None,
+        animated: bool = False,
     ) -> CaptureResult | None:
         if _should_skip(crop, self.cfg.detection):
             return None
-        return self._ingest_one(crop, location, surface, slot_index, screenshot_path)
+        return self._ingest_one(crop, location, surface, slot_index, screenshot_path, animated)
 
     def _ingest_one(
         self,
@@ -105,9 +116,15 @@ class Collector:
         surface: str,
         slot_index: int,
         screenshot_path: str | None,
+        animated: bool = False,
     ) -> CaptureResult:
         digest = str(imagehash.phash(crop, hash_size=self.cfg.capture.phash_size))
-        existing = self.store.match(digest, self.cfg.capture.dedupe_distance)
+        existing = self.store.match(
+            digest,
+            self.cfg.capture.dedupe_distance,
+            animated=animated,
+            animated_distance=self.cfg.capture.video_dedupe_distance,
+        )
 
         if existing:
             canonical = existing
@@ -117,7 +134,7 @@ class Collector:
             canonical = digest
             path = str(self.creatives_dir / f"{canonical}.png")
             crop.save(path)
-            self.store.add_creative(canonical, path, crop.width, crop.height)
+            self.store.add_creative(canonical, path, crop.width, crop.height, is_video=animated)
             is_new_creative = True
 
         key = (location, surface, canonical)

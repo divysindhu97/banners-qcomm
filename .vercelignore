@@ -1,0 +1,20 @@
+# Only `site/` is deployed. Everything below is either huge, private, or would
+# make Vercel think this is a Python app and look for a server entrypoint.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Scraper source and its dependency manifests. requirements.txt at the root is
+# what makes Vercel demand a Python entrypoint (app.py, wsgi.py and friends).
+blinkit_banners/
+tests/
+requirements.txt
+requirements-dev.txt
+config.yaml
+config.local.yaml
+taxonomy.yaml
+
+# The working library: SQLite plus ~536 MB of full-screen debug captures.
+# `export` copies the creative images it needs into site/creatives.
+data/

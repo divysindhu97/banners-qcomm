@@ -12,7 +12,10 @@ CREATE TABLE IF NOT EXISTS creatives (
     height          INTEGER NOT NULL,
     first_seen      TEXT NOT NULL,
     last_seen       TEXT NOT NULL,
-    sighting_count  INTEGER NOT NULL DEFAULT 0
+    sighting_count  INTEGER NOT NULL DEFAULT 0,
+    -- Captured from a slide that was still changing between two reads, i.e. a
+    -- frame of a video ad rather than a static banner.
+    is_video        INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS sightings (
@@ -103,13 +106,17 @@ class Store:
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
-        self._hashes: list[str] = [r["phash"] for r in self.conn.execute("SELECT phash FROM creatives")]
+        self._hashes: list[tuple[str, bool]] = [
+            (row["phash"], bool(row["is_video"]))
+            for row in self.conn.execute("SELECT phash, is_video FROM creatives")
+        ]
 
     def _migrate(self) -> None:
         """Add columns introduced after a database was first created."""
         for table, column, ddl in (
             ("sightings", "city", "TEXT"),
             ("sightings", "pincode", "TEXT"),
+            ("creatives", "is_video", "INTEGER NOT NULL DEFAULT 0"),
         ):
             existing = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
@@ -118,25 +125,48 @@ class Store:
     def close(self) -> None:
         self.conn.close()
 
-    def match(self, phash: str, max_distance: int) -> str | None:
-        """Return an existing creative hash within `max_distance`, nearest first."""
+    def match(
+        self,
+        phash: str,
+        max_distance: int,
+        *,
+        animated: bool = False,
+        animated_distance: int | None = None,
+    ) -> str | None:
+        """Return an existing creative hash for this image, nearest first.
+
+        Two passes. The strict one runs against the whole library, so a banner
+        always finds its own earlier render. Only if that fails, and this frame
+        came off a video, does the loose pass run — and then only against other
+        video frames, which is what lets the frames of one spot collapse into a
+        single creative without ever merging two static banners.
+        """
+        strict = self._nearest(phash, max_distance, video_only=False)
+        if strict or not animated or animated_distance is None:
+            return strict
+        return self._nearest(phash, animated_distance, video_only=True)
+
+    def _nearest(self, phash: str, max_distance: int, *, video_only: bool) -> str | None:
         best: tuple[int, str] | None = None
-        for known in self._hashes:
-            if len(known) != len(phash):
+        for known, is_video in self._hashes:
+            if len(known) != len(phash) or (video_only and not is_video):
                 continue
             distance = _hamming(phash, known)
             if distance <= max_distance and (best is None or distance < best[0]):
                 best = (distance, known)
         return best[1] if best else None
 
-    def add_creative(self, phash: str, file_path: str, width: int, height: int) -> None:
+    def add_creative(
+        self, phash: str, file_path: str, width: int, height: int, is_video: bool = False
+    ) -> None:
         now = _now()
         self.conn.execute(
-            "INSERT OR IGNORE INTO creatives (phash, file_path, width, height, first_seen, last_seen)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (phash, file_path, width, height, now, now),
+            "INSERT OR IGNORE INTO creatives"
+            " (phash, file_path, width, height, first_seen, last_seen, is_video)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (phash, file_path, width, height, now, now, int(is_video)),
         )
-        self._hashes.append(phash)
+        self._hashes.append((phash, is_video))
         self.conn.commit()
 
     def add_sighting(
@@ -169,7 +199,7 @@ class Store:
         self.conn.execute("DELETE FROM attributes WHERE phash = ?", (phash,))
         self.conn.execute("DELETE FROM sightings WHERE phash = ?", (phash,))
         self.conn.execute("DELETE FROM creatives WHERE phash = ?", (phash,))
-        self._hashes = [h for h in self._hashes if h != phash]
+        self._hashes = [entry for entry in self._hashes if entry[0] != phash]
         self.conn.commit()
         return Path(row["file_path"]) if row else None
 

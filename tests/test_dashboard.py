@@ -90,6 +90,40 @@ def test_toolbar_has_search_pills_and_dropdowns(tmp_path):
     store.close()
 
 
+def test_export_bundles_images_beside_the_page(tmp_path):
+    """A deployable build must not link back out to the local library."""
+    store = Store(tmp_path / "banners.db")
+    library = tmp_path / "library"
+    library.mkdir()
+    image = library / "creative.png"
+    image.write_bytes(b"not really a png")
+    _seed(store, "aa" * 32, "Delhi banner", path=str(image))
+
+    site = tmp_path / "site"
+    render(store.library(), site / "index.html", store.place_summaries(), asset_dir=site / "creatives")
+    body = (site / "index.html").read_text(encoding="utf-8")
+
+    assert 'src="creatives/creative.png"' in body
+    assert "../" not in body
+    assert (site / "creatives" / "creative.png").read_bytes() == b"not really a png"
+    store.close()
+
+
+def test_local_dashboard_still_points_at_the_library(tmp_path):
+    """Without an asset dir nothing is copied; the file:// page reads in place."""
+    store = Store(tmp_path / "banners.db")
+    image = tmp_path / "creative.png"
+    image.write_bytes(b"")
+    _seed(store, "aa" * 32, "Delhi banner", path=str(image))
+
+    destination = tmp_path / "dashboard.html"
+    render(store.library(), destination, store.place_summaries())
+
+    assert 'src="creative.png"' in destination.read_text(encoding="utf-8")
+    assert not (tmp_path / "creatives").exists()
+    store.close()
+
+
 def test_stats_strip_counts_the_library(tmp_path):
     store = Store(tmp_path / "banners.db")
     image = tmp_path / "creative.png"

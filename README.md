@@ -271,6 +271,37 @@ Set `location_mode`, or override per run with `--location-mode`.
 The dashboard shows each creative's cities, pincodes and scrape dates (IST), and filters by
 them. The page is a white static HTML file at `data/dashboard.html`.
 
+## Deploying the dashboard
+
+`data/dashboard.html` points at the image library on disk, which is right for opening it
+locally and wrong for a host. `export` writes a standalone copy instead:
+
+```powershell
+.\.venv\Scripts\python.exe -m blinkit_banners.cli export --clean
+```
+
+That produces `site/` — `index.html`, a `creatives/` folder holding a copy of every image,
+and a `robots.txt` that keeps the archive out of search results. Paths inside the page are
+relative, so the folder works from any origin, and nothing else in the project is copied:
+the SQLite file and the ~536 MB of full-screen debug captures stay local.
+
+Nothing in `site/` needs Python. Deploy it as static output:
+
+```powershell
+npx vercel deploy --prod
+```
+
+`vercel.json` pins `outputDirectory` to `site` and stubs out install and build. That
+matters: Vercel sees `requirements.txt` at the root, assumes a Python app, and fails with
+*"No python entrypoint found"* unless it is told otherwise. `.vercelignore` keeps the
+scraper, its manifests, and `data/` out of the upload for the same reason.
+
+Images are named by content hash, so `creatives/*` is served `immutable` for a year while
+`index.html` revalidates every time. Re-run `export` after each scrape.
+
+`site/` is gitignored, since the bundle is ~40 MB today and grows with the library. Drop
+that line from `.gitignore` if you would rather push to Git and let Vercel deploy on merge.
+
 ## Scheduling
 
 Use Task Scheduler to fire `run` twice a day, and widen `human.start_jitter` to something

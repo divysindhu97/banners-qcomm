@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 data/
 config.local.yaml
+
+# Built by `cli export`, uploaded straight to the host by `vercel deploy`.
+# Delete this line if you would rather deploy from Git, but note the image
+# bundle is ~40 MB today and grows with every scrape.
+site/

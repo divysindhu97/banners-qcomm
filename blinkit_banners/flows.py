@@ -4,7 +4,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from .capture import Collector
+from .capture import Collector, frames_differ
 from .config import Config, Location
 from .detect import find_banners, find_carousels
 from .device import Device, DeviceError, crop_to
@@ -179,7 +179,8 @@ def exhaust_carousel(
         except ValueError:
             break
 
-        result = collector.ingest_image(crop, location, surface_name, slot_index)
+        animated = _slide_is_animated(device, crop, slide_rect, probe.scale, cfg)
+        result = collector.ingest_image(crop, location, surface_name, slot_index, animated=animated)
         if result is None:
             break
         if first_phash is not None and result.phash == first_phash:
@@ -201,6 +202,33 @@ def exhaust_carousel(
         device.human.carousel_settle()
 
     return sightings, new_creatives
+
+
+def _slide_is_animated(device: Device, crop, rect: Rect, scale: float, cfg: Config) -> bool:
+    """Read the same slide again to see whether it is playing video.
+
+    Video ads draw a new frame constantly, so every screenshot of one hashes to
+    a different creative and the library fills up with near-identical stills.
+    A slide that redraws itself while we sit still is the one reliable tell —
+    pixel similarity alone cannot separate two frames of one video from two
+    genuinely different banners.
+
+    The carousel also rotates on its own, which would look like a change, so
+    the window is kept short and the change has to survive a second look.
+    """
+    if cfg.feed.animation_probe <= 0:
+        return False
+    previous = crop
+    for _ in range(2):
+        time.sleep(cfg.feed.animation_probe)
+        try:
+            again = crop_to(device.screenshot(), rect, scale)
+        except ValueError:
+            return False
+        if not frames_differ(previous, again, cfg.capture.phash_size):
+            return False
+        previous = again
+    return True
 
 
 def set_location(device: Device, location: Location, mode: str) -> None:

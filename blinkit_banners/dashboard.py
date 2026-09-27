@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import shutil
 import sqlite3
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -373,15 +374,38 @@ def _card(row: sqlite3.Row, image_src: str, summary: dict) -> str:
 </article>"""
 
 
-def render(rows: list[sqlite3.Row], destination: Path, summaries: dict[str, dict]) -> None:
+def _asset_src(row: sqlite3.Row, destination: Path, asset_dir: Path | None) -> str:
+    """Where the page should point for this creative's image.
+
+    Without `asset_dir` the page links straight at the library on disk, which
+    is what the local file:// dashboard wants. With it, each image is copied
+    next to the page so the whole thing can be uploaded as one static site —
+    filenames are content hashes, so a copy is only ever made once.
+    """
+    origin = Path(row["file_path"])
+    target = origin
+    if asset_dir is not None:
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        target = asset_dir / origin.name
+        if origin.exists() and not target.exists():
+            shutil.copy2(origin, target)
+    relative = os.path.relpath(target.resolve(), destination.parent.resolve())
+    return relative.replace(os.sep, "/")
+
+
+def render(
+    rows: list[sqlite3.Row],
+    destination: Path,
+    summaries: dict[str, dict],
+    asset_dir: Path | None = None,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     cards = []
     filter_rows = []
     for row in rows:
         summary = summaries.get(row["phash"], {})
-        source = os.path.relpath(Path(row["file_path"]).resolve(), destination.parent.resolve())
-        cards.append(_card(row, source.replace(os.sep, "/"), summary))
+        cards.append(_card(row, _asset_src(row, destination, asset_dir), summary))
         last_at = summary.get("last_at") or row["last_seen"]
         for city in _cities(summary) or [""]:
             filter_rows.append(

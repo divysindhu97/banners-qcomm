@@ -15,6 +15,12 @@ capture:
   # while the closest genuinely different pair differs by 74. 32 sits in that gap
   # with wide margin either side. Re-check with `dedupe-check` after app updates.
   dedupe_distance: 32
+  # Some slots play video, and every screenshot catches a different frame, so
+  # one spot would otherwise be archived many times over. Measured on a real
+  # L'Oreal spot: frames of one video up to 88 bits apart, two different videos
+  # 124 apart. Only applied between creatives already known to be video frames,
+  # so it can never merge two static banners.
+  video_dedupe_distance: 104
 
 detection:
   # 0.40 admits the half-width "Events this week" promo tiles (586/1280) while
@@ -65,6 +71,11 @@ feed:
   # a carousel that never cleanly returns to its first slide, and makes re-walking
   # an already-covered carousel cheap.
   carousel_stall_limit: 3
+  # Seconds between the two extra reads that decide whether a slide is playing
+  # video rather than showing a banner. Long enough for a video to draw a new
+  # frame, short enough that auto-rotation rarely lands inside the window.
+  # Set to 0 to skip the check and save two screenshots per slide.
+  animation_probe: 0.35
   # Tallest banner as a fraction of screen height (hero is 716/2856 = 0.25).
   # Scroll distance is capped at (visible band - this) so a banner can never
   # pass between two captures unseen.
